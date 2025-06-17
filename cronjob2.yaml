@@ -1,0 +1,42 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: retry-demo
+  namespace: default
+spec:
+  schedule: "*/5 * * * *"  # Runs every 5 mins
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: retry-test
+            image: busybox:1.35
+            command:
+              - /bin/sh
+              - -c
+              - |
+                MAX_RETRIES=6
+                RETRY_DELAY=10
+                COUNT=1
+
+                while [ $COUNT -le $MAX_RETRIES ]; do
+                  echo "Attempt $COUNT of $MAX_RETRIES..."
+                  VALUE=$((RANDOM % 4))  # 0 to 3
+
+                  if [ "$VALUE" -eq 0 ]; then
+                    echo "✅ Simulated success!"
+                    exit 0
+                  else
+                    echo "❌ Simulated failure (random value = $VALUE)"
+                  fi
+
+                  echo "Retrying in $RETRY_DELAY seconds..."
+                  sleep $RETRY_DELAY
+                  COUNT=$((COUNT + 1))
+                done
+
+                echo "❌ All retries failed. Exiting with error."
+                exit 1
