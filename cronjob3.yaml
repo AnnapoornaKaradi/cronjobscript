@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dapr-sidecar-check
+  namespace: dev-aks-sinhbgprocess
+spec:
+  schedule: "*/5 * * * *"  # Every 5 mins
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: dapr-checker
+          containers:
+          - name: dapr-check
+            image: bitnami/kubectl:latest
+            command:
+              - /bin/sh
+              - -c
+              - |
+                MAX_RETRIES=6
+                RETRY_DELAY=10
+                COUNT=1
+
+                while [ $COUNT -le $MAX_RETRIES ]; do
+                  echo "Attempt $COUNT of $MAX_RETRIES..."
+
+                  # Your actual command to detect Dapr sidecar missing pods
+                  kubectl get pods -n dev-aks-sinhbgprocess -o json | jq -r '.items[] | select(.metadata.annotations["dapr.io/enabled"]=="true") | select(.status.containerStatuses[]?.name!="daprd") | .metadata.name'
+
+                  STATUS=$?
+
+                  if [ $STATUS -eq 0 ]; then
+                    echo "Command succeeded"
+                    exit 0
+                  fi
+
+                  echo "Command failed or no matching pods found. Retrying in $RETRY_DELAY seconds..."
+                  sleep $RETRY_DELAY
+                  COUNT=$((COUNT + 1))
+                done
+
+                echo "All $MAX_RETRIES attempts failed. Exiting with failure."
+                exit 1
+            resources:
+              requests:
+                memory: "64Mi"
+                cpu: "100m"
+              limits:
+                memory: "128Mi"
+                cpu: "200m"
+          restartPolicy: Never
