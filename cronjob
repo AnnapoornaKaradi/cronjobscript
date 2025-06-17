@@ -1,0 +1,63 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dapr-sidecar-check
+  namespace: my-apps
+spec:
+  schedule: "*/10 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: check-dapr
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              MISSING=$(kubectl get pods -n my-apps -l dapr.io/enabled=true -o json | \
+              jq -r '.items[]
+                | select(.spec.containers
+                    | map(.name)
+                    | index("daprd") | not)
+                | "\(.metadata.namespace)/\(.metadata.name)"')
+              
+              if [ -n "$MISSING" ]; then
+                PAYLOAD=$(jq -n --arg txt "🚨 Missing Dapr sidecar in: $MISSING" '{text:$txt}')
+                curl -X POST \
+                  -H 'Content-Type: application/json' \
+                  -d "$PAYLOAD" \
+                  https://YOUR_FLOW_HTTP_URL
+              fi
+          restartPolicy: OnFailure
+          serviceAccountName: your-readonly-sa  # optional, if RBAC enabled
+🛡️ If You Have RBAC
+Make sure the service account (default or custom) has read permissions on pods in that namespace:
+
+yaml
+Copy
+Edit
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: my-apps
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-pods
+  namespace: my-apps
+subjects:
+- kind: ServiceAccount
+  name: default  # or your CronJob's SA
+  namespace: my-apps
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
