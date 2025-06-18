@@ -1,0 +1,41 @@
+MAX_RETRIES=6
+RETRY_DELAY=10
+COUNT=1
+ALERT_URL="https://prod-123.westus.logic.azure.com/workflows/XXXXX/triggers/manual/paths/invoke?api-version=2016-10-01&sp=...&sig=XXXXX"
+
+while [ $COUNT -le $MAX_RETRIES ]; do
+  echo "Attempt $COUNT of $MAX_RETRIES..."
+
+  MISSING_SIDECARS=$(kubectl get pods -n dev-aks-sinhbgprocess -o json | jq -r '
+    .items[]
+    | select(.metadata.annotations["dapr.io/enabled"] == "true")
+    | select(all(.status.containerStatuses[]?.name; . != "daprd"))
+    | .metadata.name')
+
+  if [ -n "$MISSING_SIDECARS" ]; then
+    echo "Detected pods missing daprd sidecar:"
+    echo "$MISSING_SIDECARS"
+
+    # Send alert to Power Automate
+    curl -X POST "$ALERT_URL" \
+      -H "Content-Type: application/json" \
+      -d "$(jq -n \
+            --arg alert "Missing Dapr Sidecar" \
+            --arg namespace "dev-aks-sinhbgprocess" \
+            --argjson pods "$(echo \"$MISSING_SIDECARS\" | jq -R -s -c 'split("\n")[:-1]')" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{alert: $alert, namespace: $namespace, pods: $pods, timestamp: $timestamp}')"
+
+    exit 1
+  else
+    echo "All pods have daprd sidecar."
+    exit 0
+  fi
+
+  echo "Retrying in $RETRY_DELAY seconds..."
+  sleep $RETRY_DELAY
+  COUNT=$((COUNT + 1))
+done
+
+echo "All $MAX_RETRIES attempts completed. No missing sidecars detected."
+exit 0
