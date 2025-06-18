@@ -1,0 +1,74 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dapr-sidecar-check
+  namespace: dev-aks-sinhbgprocess
+spec:
+  schedule: "*/5 * * * *"  # Every 5 mins
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: dapr-checker
+          restartPolicy: Never
+          containers:
+            - name: dapr-check
+              image: alpine:3.19
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  apk add --no-cache curl jq bash
+
+                  MAX_RETRIES=6
+                  RETRY_DELAY=10
+                  COUNT=1
+                  ALERT_URL="https://YOUR_POWER_AUTOMATE_URL"  # 🔁 Replace this
+
+                  while [ $COUNT -le $MAX_RETRIES ]; do
+                    echo "Attempt $COUNT of $MAX_RETRIES..."
+
+                    MISSING_SIDECARS=$(kubectl get pods -n dev-aks-sinhbgprocess -o json | jq -r '
+                      .items[]
+                      | select(.metadata.annotations["dapr.io/enabled"] == "true")
+                      | select(all(.status.containerStatuses[]?.name; . != "daprd"))
+                      | .metadata.name')
+
+                    if [ -n "$MISSING_SIDECARS" ]; then
+                      echo "Detected pods missing daprd sidecar:"
+                      echo "$MISSING_SIDECARS"
+
+                      # Convert list to JSON array
+                      POD_LIST=$(echo "$MISSING_SIDECARS" | jq -R -s -c 'split("\n")[:-1]')
+
+                      # Send alert to Power Automate
+                      curl -X POST "$ALERT_URL" \
+                        -H "Content-Type: application/json" \
+                        -d "$(jq -n \
+                          --arg alert "Missing Dapr Sidecar" \
+                          --arg namespace "dev-aks-sinhbgprocess" \
+                          --argjson pods "$POD_LIST" \
+                          --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                          '{alert: $alert, namespace: $namespace, pods: $pods, timestamp: $timestamp}')"
+
+                      exit 1
+                    else
+                      echo "All pods have daprd sidecar."
+                      exit 0
+                    fi
+
+                    echo "Retrying in $RETRY_DELAY seconds..."
+                    sleep $RETRY_DELAY
+                    COUNT=$((COUNT + 1))
+                  done
+
+                  echo "All $MAX_RETRIES attempts completed. No missing sidecars detected."
+                  exit 0
+              resources:
+                requests:
+                  memory: "64Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "128Mi"
+                  cpu: "200m"
