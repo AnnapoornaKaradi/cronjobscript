@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-dapr
+  namespace: dev-aks-sinhbgprocess
+  labels:
+    app: hello-dapr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hello-dapr
+  template:
+    metadata:
+      labels:
+        app: hello-dapr
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "hello-dapr"
+        dapr.io/app-port: "8080"
+    spec:
+      containers:
+      - name: hello-dapr
+        image: hashicorp/http-echo:latest
+        args:
+          - "-text=Hello from Dapr app"
+        ports:
+        - containerPort: 8080
