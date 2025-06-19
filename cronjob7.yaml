@@ -1,0 +1,82 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dapr-sidecar-check
+  namespace: dev-aks-sinhbgprocess
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: dapr-checker
+          restartPolicy: Never
+          containers:
+          - name: dapr-check
+            image: bitnami/kubectl:latest
+            command:
+              - /bin/sh
+              - -c
+              - |
+                NAMESPACE="dev-aks-sinhbgprocess"
+                ALERT_URL="https://your-powerautomate-url"  # 🔁 Replace with your real Power Automate URL
+                MAX_RETRIES=10
+                RETRY_DELAY=15
+                SENT_INITIAL_ALERT=false
+
+                for i in $(seq 1 $MAX_RETRIES); do
+                  echo "🔍 Attempt $i/$MAX_RETRIES"
+
+                  MISSING_PODS=$(kubectl get pods -n "$NAMESPACE" -o json | jq -r '
+                    .items[]
+                    | select(.metadata.annotations["dapr.io/enabled"] == "true")
+                    | select(all(.status.containerStatuses[]?.name; . != "daprd"))
+                    | .metadata.name')
+
+                  if [ -z "$MISSING_PODS" ]; then
+                    echo "✅ All pods have daprd sidecars."
+
+                    if [ "$SENT_INITIAL_ALERT" = true ]; then
+                      echo "📬 Sending recovery alert..."
+
+                      jq -n \
+                        --arg alert "✅ Dapr sidecar injected successfully after restart" \
+                        --arg namespace "$NAMESPACE" \
+                        --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                        '{alert: $alert, namespace: $namespace, timestamp: $timestamp}' | \
+                      curl -X POST "$ALERT_URL" -H "Content-Type: application/json" -d @-
+                    fi
+
+                    exit 0
+                  fi
+
+                  echo "🚨 Pods missing daprd:"
+                  echo "$MISSING_PODS"
+
+                  if [ "$SENT_INITIAL_ALERT" = false ]; then
+                    PODS_JSON=$(echo "$MISSING_PODS" | jq -R -s -c 'split("\n")[:-1]')
+                    echo "📬 Sending initial alert..."
+
+                    jq -n \
+                      --arg alert "🚨 Dapr sidecar missing in some pods" \
+                      --arg namespace "$NAMESPACE" \
+                      --argjson pods "$PODS_JSON" \
+                      --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                      '{alert: $alert, namespace: $namespace, pods: $pods, timestamp: $timestamp}' | \
+                    curl -X POST "$ALERT_URL" -H "Content-Type: application/json" -d @-
+
+                    SENT_INITIAL_ALERT=true  # ✅ Ensure flag is flipped regardless of curl result
+                    echo "✅ SENT_INITIAL_ALERT set to true"
+                  fi
+
+                  for pod in $MISSING_PODS; do
+                    echo "🔁 Restarting pod: $pod"
+                    kubectl delete pod "$pod" -n "$NAMESPACE"
+                  done
+
+                  echo "⏳ Waiting $RETRY_DELAY seconds before retry..."
+                  sleep $RETRY_DELAY
+                done
+
+                # Final failure alert if side
